@@ -3,5 +3,3 @@ const config = {
 };
 
 module.exports = { config };
-
-// АККАУНТ ОЛЕГА TJeeMTWNmrwThYNLoPy6CGNu7dpBW2EedZ
