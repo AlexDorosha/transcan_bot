@@ -159,9 +159,12 @@ const checkForNewTransactions = async () => {
                         wallet.lastKnownTransaction = { hash: lastTransaction.hash };
                         saveWallets();
 
-                        // Отправляем уведомление пользователю
+                        // Получаем идентификатор чата в зависимости от контекста
+                        const chatId = userId; // Убедитесь, что userId правильно установлен как chatId
+
+                        // Отправляем уведомление пользователю или в группу
                         await bot.telegram.sendMessage(
-                            userId,
+                            chatId,
                             `Новая транзакция для кошелька ${wallet.name}:\n` +
                             `Сумма: ${lastTransaction.amount / 1e6} USDT\n` +
                             `Отправитель: ${lastTransaction.from}\n` +
