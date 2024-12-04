@@ -207,6 +207,7 @@ const getLastTransaction = async (walletAddress) => {
 
 // Функция для отслеживания новых транзакций
 const checkForNewTransactions = async () => {
+    // Проверяем транзакции для пользователей
     for (const userId in userWallets) {
         const wallets = userWallets[userId];
 
@@ -222,19 +223,46 @@ const checkForNewTransactions = async () => {
                         wallet.lastKnownTransaction = { hash: lastTransaction.hash };
                         saveWallets();
 
-                        // Получаем идентификатор чата в зависимости от контекста
-                        const chatIds = [userId]; // Добавьте сюда идентификаторы чатов, если это групповой чат
+                        // Уведомляем пользователя о новой транзакции
+                        await bot.telegram.sendMessage(
+                            userId,
+                            `Новая транзакция для кошелька ${wallet.name}:\n` +
+                            `Сумма: ${lastTransaction.amount / 1e6} USDT\n` +
+                            `Отправитель: ${lastTransaction.from}\n` +
+                            `Получатель: ${lastTransaction.to}`
+                        );
+                    }
+                }
+            } catch (error) {
+                console.error(`Ошибка при проверке транзакций для кошелька ${wallet.address}:`, error.message);
+            }
+        }
+    }
 
-                        for (let chatId of chatIds) {
-                            // Отправляем уведомление пользователю или в группу
-                            await bot.telegram.sendMessage(
-                                chatId,
-                                `Новая транзакция для кошелька ${wallet.name}:\n` +
-                                `Сумма: ${lastTransaction.amount / 1e6} USDT\n` +
-                                `Отправитель: ${lastTransaction.from}\n` +
-                                `Получатель: ${lastTransaction.to}`
-                            );
-                        }
+    // Проверяем транзакции для групп
+    for (const chatId in chatWallets) {
+        const wallets = chatWallets[chatId];
+
+        for (const wallet of wallets) {
+            try {
+                const lastTransaction = await getLastTransaction(wallet.address);
+
+                if (lastTransaction) {
+                    if (
+                        !wallet.lastKnownTransaction ||
+                        wallet.lastKnownTransaction.hash !== lastTransaction.hash
+                    ) {
+                        wallet.lastKnownTransaction = { hash: lastTransaction.hash };
+                        saveWallets();
+
+                        // Уведомляем группу о новой транзакции
+                        await bot.telegram.sendMessage(
+                            chatId,
+                            `Новая транзакция для кошелька ${wallet.name}:\n` +
+                            `Сумма: ${lastTransaction.amount / 1e6} USDT\n` +
+                            `Отправитель: ${lastTransaction.from}\n` +
+                            `Получатель: ${lastTransaction.to}`
+                        );
                     }
                 }
             } catch (error) {
