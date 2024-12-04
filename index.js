@@ -1,4 +1,3 @@
-// const { Telegraf } = require('telegraf');
 const { Telegraf, session } = require('telegraf');
 const { config } = require('./config.js');
 const axios = require('axios');
@@ -6,12 +5,11 @@ const fs = require('fs');
 
 const bot = new Telegraf(config.telegramToken, {});
 
-const userWallets = {}; // Хранилище для кошельков пользователей
+const userWallets = {}; // Хранилище для кошельков пользователей и чатов
+const chatWallets = {}; // Хранилище для чатов и их кошельков
 bot.use(session());
 
-
 // Загрузка сохраненных кошельков (если есть)
-
 if (fs.existsSync('wallets.json')) {
     const data = fs.readFileSync('wallets.json');
     const parsedData = JSON.parse(data);
@@ -25,6 +23,7 @@ if (fs.existsSync('wallets.json')) {
 
     Object.assign(userWallets, parsedData);
 }
+
 // Сохранение кошельков в файл
 const saveWallets = () => {
     fs.writeFileSync('wallets.json', JSON.stringify(userWallets));
@@ -34,7 +33,7 @@ const saveWallets = () => {
 bot.telegram.setMyCommands([
     { command: '/start', description: 'Начальное приветствие' },
     { command: '/listwallets', description: 'Просмотр всех кошельков' },
-    { command: '/addwallet', description: 'Добавления кошелька' },
+    { command: '/addwallet', description: 'Добавление кошелька' },
     { command: '/removewallet', description: 'Удаление кошелька' },
 ]);
 
@@ -45,24 +44,36 @@ bot.start((ctx) => {
     ctx.reply('Привет! Я бот для отслеживания транзакций.\n' +
         'Используй /addwallet для добавления кошельков.\n' +
         'Используй /removewallet для удаления кошельков.\n' +
-        'Используй /listwallets для просмотра кошельков.');;
+        'Используй /listwallets для просмотра кошельков.');
 });
 
 // Команда для добавления кошелька
 bot.command('addwallet', (ctx) => {
     ctx.session.state = { action: 'adding_wallet_address' };
-    ctx.reply('Введите адрес Вашего кошелька:');
+
+    const isGroupChat = ctx.chat.type === 'supergroup' || ctx.chat.type === 'group';
+    if (isGroupChat) {
+        ctx.reply('Введите адрес кошелька для группы:');
+    } else {
+        ctx.reply('Введите адрес Вашего кошелька:');
+    }
 });
 
 // Команда для удаления кошелька
 bot.command('removewallet', (ctx) => {
     ctx.session.state = { action: 'removing_wallet_name' };
-    ctx.reply('Введите имя кошелька, который хотите удалить (используйте /listwallets для просмотра):');
+
+    const isGroupChat = ctx.chat.type === 'supergroup' || ctx.chat.type === 'group';
+    if (isGroupChat) {
+        ctx.reply('Введите имя кошелька для группы, который хотите удалить (используйте /listwallets для просмотра):');
+    } else {
+        ctx.reply('Введите имя кошелька, который хотите удалить (используйте /listwallets для просмотра):');
+    }
 });
 
 // Команда для просмотра всех добавленных кошельков
 bot.command('listwallets', (ctx) => {
-    const wallets = userWallets[ctx.from.id];
+    const wallets = userWallets[ctx.from.id] || [];
     if (!wallets || wallets.length === 0) {
         ctx.reply('У вас нет добавленных кошельков.');
     } else {
@@ -73,7 +84,7 @@ bot.command('listwallets', (ctx) => {
     }
 });
 
-// Обработчик текстовых сообщений
+// Обработчик текстовых сообщений добавления кошелька
 bot.on('text', async (ctx) => {
     ctx.session = ctx.session || {}; // Инициализируем сессии, если их еще не было
 
@@ -82,7 +93,14 @@ bot.on('text', async (ctx) => {
         const walletAddress = ctx.message.text.trim();
         ctx.session.newWalletAddress = walletAddress; // Сохраняем адрес для следующего шага
         ctx.session.state.action = 'adding_wallet_name'; // Переходим к следующему шагу
-        ctx.reply('Теперь введите имя для этого кошелька:');
+
+        const isGroupChat = ctx.chat.type === 'supergroup' || ctx.chat.type === 'group';
+
+        if (isGroupChat) {
+            ctx.reply('Теперь введите имя для этого кошелька группы:');
+        } else {
+            ctx.reply('Теперь введите имя для этого кошелька:');
+        }
     }
 
     // Обработка имени кошелька
@@ -90,37 +108,82 @@ bot.on('text', async (ctx) => {
         const walletName = ctx.message.text.trim();
         const walletAddress = ctx.session.newWalletAddress;
 
-        if (!userWallets[ctx.from.id]) {
-            userWallets[ctx.from.id] = [];
+        const isGroupChat = ctx.chat.type === 'supergroup' || ctx.chat.type === 'group';
+        const chatId = isGroupChat ? ctx.chat.id : ctx.from.id;  // Для группы используем chat.id, для пользователя - from.id
+
+        // Если это групповая сессия, сохраняем кошелек для группы
+        if (isGroupChat) {
+            if (!chatWallets[chatId]) {
+                chatWallets[chatId] = [];
+            }
+
+            // Проверка на существование кошелька с таким же именем в группе
+            if (chatWallets[chatId].find(wallet => wallet.name === walletName)) {
+                ctx.reply('Этот кошелек с таким именем уже добавлен в группу.');
+            } else {
+                chatWallets[chatId].push({ name: walletName, address: walletAddress, lastKnownTransaction: null });
+                ctx.reply(`Кошелек с адресом ${walletAddress} добавлен в группу под именем "${walletName}".`);
+            }
+        } else {
+            // Для пользователей, сохраняем кошелек в userWallets
+            if (!userWallets[ctx.from.id]) {
+                userWallets[ctx.from.id] = [];
+            }
+
+            // Проверка на существование кошелька с таким же именем у пользователя
+            if (userWallets[ctx.from.id].find(wallet => wallet.name === walletName)) {
+                ctx.reply('Этот кошелек с таким именем уже добавлен.');
+            } else {
+                userWallets[ctx.from.id].push({ name: walletName, address: walletAddress, lastKnownTransaction: null });
+                ctx.reply(`Кошелек с адресом ${walletAddress} добавлен под именем "${walletName}".`);
+            }
         }
 
-        if (userWallets[ctx.from.id].find(wallet => wallet.name === walletName)) {
-            ctx.reply('Этот кошелек с таким именем уже добавлен.');
-        } else {
-            userWallets[ctx.from.id].push({ name: walletName, address: walletAddress, lastKnownTransaction: null });
-            ctx.reply(`Кошелек с адресом ${walletAddress} добавлен под именем "${walletName}"!`);
-            saveWallets(); // Сохраняем изменения
-        }
+        saveWallets(); // Сохраняем изменения
         ctx.session.state = null; // Сбрасываем состояние
     }
+});
 
-    // Обработка удаления кошелька
-    else if (ctx.session.state && ctx.session.state.action === 'removing_wallet_name') {
+// Обработчик текстовых сообщений удаления кошелька
+bot.on('text', async (ctx) => {
+    if (ctx.session.state && ctx.session.state.action === 'removing_wallet_name') {
         const walletName = ctx.message.text.trim();
-        if (!userWallets[ctx.from.id] || userWallets[ctx.from.id].length === 0) {
-            ctx.reply('У Вас нет сохраненных кошельков.');
-            ctx.session.state = null; // Сбрасываем состояние
-            return;
+        const isGroupChat = ctx.chat.type === 'supergroup' || ctx.chat.type === 'group';
+        const chatId = isGroupChat ? ctx.chat.id : ctx.from.id;
+
+        // Удаление кошелька для группы
+        if (isGroupChat) {
+            if (!chatWallets[chatId] || chatWallets[chatId].length === 0) {
+                ctx.reply('У Вас нет сохраненных кошельков в группе.');
+                ctx.session.state = null; // Сбрасываем состояние
+                return;
+            }
+
+            const walletIndex = chatWallets[chatId].findIndex(wallet => wallet.name === walletName);
+            if (walletIndex === -1) {
+                ctx.reply('Некорректное имя кошелька в группе. Попробуйте снова.');
+            } else {
+                const removedWallet = chatWallets[chatId].splice(walletIndex, 1);
+                ctx.reply(`Кошелек "${removedWallet[0].name}" удален из группы.`);
+                saveWallets(); // Сохраняем изменения
+            }
+        } else {
+            if (!userWallets[ctx.from.id] || userWallets[ctx.from.id].length === 0) {
+                ctx.reply('У Вас нет сохраненных кошельков.');
+                ctx.session.state = null; // Сбрасываем состояние
+                return;
+            }
+
+            const walletIndex = userWallets[ctx.from.id].findIndex(wallet => wallet.name === walletName);
+            if (walletIndex === -1) {
+                ctx.reply('Некорректное имя кошелька. Попробуйте снова.');
+            } else {
+                const removedWallet = userWallets[ctx.from.id].splice(walletIndex, 1);
+                ctx.reply(`Кошелек "${removedWallet[0].name}" удален.`);
+                saveWallets(); // Сохраняем изменения
+            }
         }
 
-        const walletIndex = userWallets[ctx.from.id].findIndex(wallet => wallet.name === walletName);
-        if (walletIndex === -1) {
-            ctx.reply('Некорректное имя кошелька. Попробуйте снова.');
-        } else {
-            const removedWallet = userWallets[ctx.from.id].splice(walletIndex, 1);
-            ctx.reply(`Кошелек "${removedWallet[0].name}" удален.`);
-            saveWallets(); // Сохраняем изменения
-        }
         ctx.session.state = null; // Сбрасываем состояние
     }
 });
@@ -160,16 +223,18 @@ const checkForNewTransactions = async () => {
                         saveWallets();
 
                         // Получаем идентификатор чата в зависимости от контекста
-                        const chatId = userId; // Убедитесь, что userId правильно установлен как chatId
+                        const chatIds = [userId]; // Добавьте сюда идентификаторы чатов, если это групповой чат
 
-                        // Отправляем уведомление пользователю или в группу
-                        await bot.telegram.sendMessage(
-                            chatId,
-                            `Новая транзакция для кошелька ${wallet.name}:\n` +
-                            `Сумма: ${lastTransaction.amount / 1e6} USDT\n` +
-                            `Отправитель: ${lastTransaction.from}\n` +
-                            `Получатель: ${lastTransaction.to}`
-                        );
+                        for (let chatId of chatIds) {
+                            // Отправляем уведомление пользователю или в группу
+                            await bot.telegram.sendMessage(
+                                chatId,
+                                `Новая транзакция для кошелька ${wallet.name}:\n` +
+                                `Сумма: ${lastTransaction.amount / 1e6} USDT\n` +
+                                `Отправитель: ${lastTransaction.from}\n` +
+                                `Получатель: ${lastTransaction.to}`
+                            );
+                        }
                     }
                 }
             } catch (error) {
@@ -185,8 +250,3 @@ setInterval(checkForNewTransactions, 1 * 60 * 1000);
 // Запуск бота
 bot.launch();
 console.log('Бот запущен и работает...');
-
-
-
-
-
