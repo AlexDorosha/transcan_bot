@@ -7,10 +7,10 @@ const bot = new Telegraf(config.telegramToken);
 
 const wallets = {}; // Хранилище кошельков (общая структура для пользователей и групп)
 
-bot.use((ctx, next) => {
-    console.log(`Chat Type: ${ctx.chat.type}, User ID: ${ctx.from.id}, Chat ID: ${ctx.chat.id}`);
-    return next();
-});
+// bot.use((ctx, next) => {
+//     console.log(`Chat Type: ${ctx.chat.type}, User ID: ${ctx.from.id}, Chat ID: ${ctx.chat.id}`);
+//     return next();
+// });
 bot.use(session());
 
 // Загрузка сохраненных кошельков (если есть)
@@ -161,12 +161,16 @@ const checkForNewTransactions = async () => {
                     wallet.lastKnownTransaction = { hash: lastTransaction.transaction_id };
                     saveWallets();
 
+                    const shortAddress = (address) => `${address.slice(0, 6)}...${address.slice(-6)}`;
+
                     await bot.telegram.sendMessage(
                         chatId,
-                        `Новая транзакция для ${wallet.name}:\n` +
-                        `Сумма: ${lastTransaction.amount / 1e6} USDT\n` +
-                        `Отправитель: ${lastTransaction.from}\n` +
-                        `Получатель: ${lastTransaction.to}`
+                        `*Новая транзакция ${wallet.name}:*\n` +
+                        `💵 *Сумма:* \`${(lastTransaction.amount / 1e6).toFixed(2)} USDT\`\n` +
+                        `👤 *Отправитель:* \`${shortAddress(lastTransaction.from)}\`\n` +
+                        `📥 *Получатель:* \`${shortAddress(lastTransaction.to)}\`\n` +
+                        `[🔗 Просмотреть транзакцию](https://tronscan.org/#/transaction/${lastTransaction.hash})`,
+                        { parse_mode: 'MarkdownV2' }
                     );
                 }
             } catch (error) {
