@@ -1,7 +1,3 @@
-// bot.use((ctx, next) => {
-//     console.log(`Chat Type: ${ctx.chat.type}, User ID: ${ctx.from.id}, Chat ID: ${ctx.chat.id}`);
-//     return next();
-// });
 const { Telegraf, session } = require('telegraf');
 const { config } = require('./config.js');
 const axios = require('axios');
@@ -11,6 +7,10 @@ const bot = new Telegraf(config.telegramToken);
 
 const wallets = {}; // Хранилище кошельков (общая структура для пользователей и групп)
 
+bot.use((ctx, next) => {
+    console.log(`Chat Type: ${ctx.chat.type}, User ID: ${ctx.from.id}, Chat ID: ${ctx.chat.id}`);
+    return next();
+});
 bot.use(session());
 
 // Загрузка сохраненных кошельков (если есть)
@@ -25,7 +25,12 @@ const saveWallets = () => {
 };
 
 // Функция определения идентификатора для пользователя или группы
-const getChatId = (ctx) => ctx.chat.id;
+const getChatId = (ctx) => {
+    if (ctx.chat.type === 'private') {
+        return ctx.from.id; // Личный чат
+    }
+    return ctx.chat.id; // Групповой чат
+};
 
 // Команды бота
 bot.telegram.setMyCommands([
@@ -80,6 +85,14 @@ bot.command('listwallets', (ctx) => {
 bot.on('text', async (ctx) => {
     ctx.session = ctx.session || {};
     const chatId = getChatId(ctx);
+
+    // Проверка прав в группах
+    if (ctx.chat.type === 'supergroup' || ctx.chat.type === 'group') {
+        const botInfo = await bot.telegram.getChatMember(ctx.chat.id, ctx.botInfo.id);
+        if (!['administrator', 'member'].includes(botInfo.status)) {
+            return ctx.reply('У меня нет прав для работы в этой группе.');
+        }
+    }
 
     // Добавление кошелька
     if (ctx.session.state?.action === 'adding_wallet_address') {
