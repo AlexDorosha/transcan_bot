@@ -156,9 +156,9 @@ const checkForNewTransactions = async () => {
                 const lastTransaction = await getLastTransaction(wallet.address);
                 if (
                     lastTransaction &&
-                    (!wallet.lastKnownTransaction || wallet.lastKnownTransaction.hash !== lastTransaction.transaction_id)
+                    (!wallet.lastKnownTransaction || wallet.lastKnownTransaction.hash !== lastTransaction.hash)
                 ) {
-                    wallet.lastKnownTransaction = { hash: lastTransaction.transaction_id };
+                    wallet.lastKnownTransaction = { hash: lastTransaction.hash };
                     saveWallets();
 
                     const shortAddress = (address) => `${address.slice(0, 6)}...${address.slice(-6)}`;
