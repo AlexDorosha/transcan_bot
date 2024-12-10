@@ -162,13 +162,16 @@ const checkForNewTransactions = async () => {
                     saveWallets();
 
                     const shortAddress = (address) => `${address.slice(0, 6)}...${address.slice(-6)}`;
+                    const isOutgoing = lastTransaction.from === wallet.address;
 
                     await bot.telegram.sendMessage(
                         chatId,
                         `*Новая транзакция ${wallet.name}:*\n` +
                         `💵 *Сумма:* \`${(lastTransaction.amount / 1e6).toFixed(2)} USDT\`\n` +
-                        `👤 *Отправитель:* \`${shortAddress(lastTransaction.from)}\`\n` +
-                        `📥 *Получатель:* \`${shortAddress(lastTransaction.to)}\`\n` +
+                        `👤 *${isOutgoing ? "Получатель" : "Отправитель"}:* \`${shortAddress(
+                            isOutgoing ? lastTransaction.to : lastTransaction.from
+                        )}\`\n` +
+                        `📄 *Тип:* \`${isOutgoing ? "Исходящая" : "Входящая"}\`\n` +
                         `[🔗 Просмотреть транзакцию](https://tronscan.org/#/transaction/${lastTransaction.hash})`,
                         { parse_mode: 'MarkdownV2' }
                     );
@@ -180,8 +183,8 @@ const checkForNewTransactions = async () => {
     }
 };
 
-// Запускаем проверку каждые 60 секунд
-setInterval(checkForNewTransactions, 60000);
+// Запускаем проверку каждые 30 секунд
+setInterval(checkForNewTransactions, 30000);
 
 // Запуск бота
 bot.launch();
