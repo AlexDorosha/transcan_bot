@@ -135,11 +135,11 @@ bot.on('text', async (ctx) => {
     }
 });
 
-// Функция получения последней транзакции
+// Функция получения последней транзакции (входящей/исходящей)
 const getLastTransaction = async (walletAddress) => {
     try {
         const response = await axios.get(
-            `https://apilist.tronscanapi.com/api/transfer/trc20?address=${walletAddress}&trc20Id=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t&start=0&limit=1`
+            `https://apilist.tronscanapi.com/api/transfer/trc20?address=${walletAddress}&trc20Id=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t&direction=0&start=0&limit=3`
         );
         return response.data.data?.[0] || null;
     } catch (error) {
@@ -154,24 +154,30 @@ const checkForNewTransactions = async () => {
         for (const wallet of wallets[chatId]) {
             try {
                 const lastTransaction = await getLastTransaction(wallet.address);
-                if (
-                    lastTransaction &&
-                    (!wallet.lastKnownTransaction || wallet.lastKnownTransaction.hash !== lastTransaction.hash)
-                ) {
+                if (!lastTransaction) continue;
+
+                // Проверяем, если транзакция новая
+                const isNewTransaction =
+                    !wallet.lastKnownTransaction ||
+                    wallet.lastKnownTransaction.hash !== lastTransaction.hash;
+
+                if (isNewTransaction) {
+                    // Определяем тип транзакции
+                    const isOutgoing = lastTransaction.from === wallet.address;
+                    const otherParty = isOutgoing ? lastTransaction.to : lastTransaction.from;
+
+                    // Сохраняем последнюю транзакцию
                     wallet.lastKnownTransaction = { hash: lastTransaction.hash };
                     saveWallets();
 
+                    // Отправляем сообщение
                     const shortAddress = (address) => `${address.slice(0, 6)}...${address.slice(-6)}`;
-                    const isOutgoing = lastTransaction.from === wallet.address;
-
                     await bot.telegram.sendMessage(
                         chatId,
                         `*Новая транзакция ${wallet.name}:*\n` +
                         `💵 *Сумма:* \`${(lastTransaction.amount / 1e6).toFixed(2)} USDT\`\n` +
-                        `👤 *${isOutgoing ? "Получатель" : "Отправитель"}:* \`${shortAddress(
-                            isOutgoing ? lastTransaction.to : lastTransaction.from
-                        )}\`\n` +
-                        `📄 *Тип:* \`${isOutgoing ? "Исходящая" : "Входящая"}\`\n` +
+                        `👤 *${isOutgoing ? "Получатель" : "Отправитель"}:* \`${shortAddress(otherParty)}\`\n` +
+                        `📄 *Тип:* \`${isOutgoing ? "Отправка" : "Пополнение"}\`\n` +
                         `[🔗 Просмотреть транзакцию](https://tronscan.org/#/transaction/${lastTransaction.hash})`,
                         { parse_mode: 'MarkdownV2' }
                     );
@@ -182,6 +188,8 @@ const checkForNewTransactions = async () => {
         }
     }
 };
+
+
 
 // Запускаем проверку каждые 30 секунд
 setInterval(checkForNewTransactions, 30000);
