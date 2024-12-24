@@ -2,15 +2,13 @@ const { Telegraf, session } = require('telegraf');
 const { config } = require('./config.js');
 const axios = require('axios');
 const fs = require('fs');
-
 const bot = new Telegraf(config.telegramToken);
 
-const wallets = {}; // Хранилище кошельков (общая структура для пользователей и групп)
-
-// bot.use((ctx, next) => {
-//     console.log(`Chat Type: ${ctx.chat.type}, User ID: ${ctx.from.id}, Chat ID: ${ctx.chat.id}`);
-//     return next();
-// });
+// Хранилище кошельков (общая структура для пользователей и групп)
+const wallets = {};
+// Новый список кошельков для проверки
+const watchList = [];
+// Подгружаем сессии
 bot.use(session());
 
 // Загрузка сохраненных кошельков (если есть)
@@ -18,10 +16,19 @@ if (fs.existsSync('wallets.json')) {
     const data = fs.readFileSync('wallets.json');
     Object.assign(wallets, JSON.parse(data));
 }
+// Загрузка списка кошельков для проверки (если есть)
+if (fs.existsSync('watchlist.json')) {
+    const data = fs.readFileSync('watchlist.json');
+    watchList.push(...JSON.parse(data));
+}
 
 // Сохранение кошельков в файл
 const saveWallets = () => {
     fs.writeFileSync('wallets.json', JSON.stringify(wallets));
+};
+// Сохранение списка наблюдения в файл
+const saveWatchList = () => {
+    fs.writeFileSync('watchlist.json', JSON.stringify(watchList));
 };
 
 // Функция определения идентификатора для пользователя или группы
@@ -38,6 +45,8 @@ bot.telegram.setMyCommands([
     { command: '/listwallets', description: 'Просмотр всех кошельков' },
     { command: '/addwallet', description: 'Добавление кошелька' },
     { command: '/removewallet', description: 'Удаление кошелька' },
+    { command: '/addwatch', description: 'добавить кошелек партнеров' },
+    { command: '/showwatchlist', description: 'Удаление кошелька' },
 ]);
 
 // /start
@@ -46,8 +55,10 @@ bot.start((ctx) => {
     ctx.reply(
         'Привет! Я бот для отслеживания транзакций.\n' +
         'Команды:\n' +
-        '/addwallet - добавить кошелек\n' +
-        '/removewallet - удалить кошелек\n' +
+        '/addwatch - добавить кошелек партнеров\n' +
+        '/showwatchlist - список кошельков партнеров\n' +
+        '/addwallet - добавить кошелек для отслеживания\n' +
+        '/removewallet - удалить кошелек для отслеживания\n' +
         '/listwallets - список кошельков'
     );
 });
@@ -77,9 +88,37 @@ bot.command('listwallets', (ctx) => {
     }
     ctx.reply(
         'Список кошельков:\n' +
-        chatWallets.map((wallet, index) => `${index + 1}. ${wallet.name}`).join('\n')
+        chatWallets.map((wallet, index) => `${index + 1}. ${wallet.name} (${wallet.address})`).join('\n')
     );
 });
+
+// /addwatch       Добавление команды для включения режима добавления кошельков в watchList
+bot.command('addwatch', (ctx) => {
+    ctx.session.state = { action: 'adding_watchlist_wallet_address' };
+    ctx.reply('Введите адрес кошелька для добавления в список наблюдения:');
+});
+
+
+// /showwatchlist    Вывод списка кошельков для проверки
+bot.command('showwatchlist', (ctx) => {
+    if (watchList.length === 0) {
+        ctx.reply('Список кошельков для проверки пуст.');
+    } else {
+        const listMessage = watchList
+            .map((wallet, index) => `${index + 1}. ${wallet.name} (${wallet.address})`)
+            .join('\n');
+        ctx.reply(`Список кошельков для проверки:\n${listMessage}`);
+    }
+});
+
+
+// Функция для поиска имени кошелька по адресу в новом списке
+const getWalletNameFromWatchList = (address) => {
+    const wallet = watchList.find((w) => w.address === address);
+    return wallet ? wallet.name : null;
+};
+
+
 
 // Обработчик текстовых сообщений для добавления и удаления кошельков
 bot.on('text', async (ctx) => {
@@ -133,6 +172,27 @@ bot.on('text', async (ctx) => {
         }
         ctx.session.state = null;
     }
+
+
+    // Добавление кошельков в список для проверки
+    if (ctx.session.state?.action === 'adding_watchlist_wallet_address') {
+        const walletAddress = ctx.message.text.trim();
+        ctx.session.newWatchListWalletAddress = walletAddress;
+        ctx.session.state.action = 'adding_watchlist_wallet_name';
+        ctx.reply('Введите имя для кошелька:');
+    } else if (ctx.session.state?.action === 'adding_watchlist_wallet_name') {
+        const walletName = ctx.message.text.trim();
+        const walletAddress = ctx.session.newWatchListWalletAddress;
+
+        if (watchList.some((wallet) => wallet.address === walletAddress)) {
+            ctx.reply('Кошелек уже добавлен в список для проверки.');
+        } else {
+            watchList.push({ address: walletAddress, name: walletName });
+            saveWatchList();
+            ctx.reply(`Кошелек "${walletName}" добавлен в список для проверки.`);
+        }
+        ctx.session.state = null;
+    }
 });
 
 // Функция получения последней транзакции (входящей/исходящей)
@@ -147,6 +207,7 @@ const getLastTransaction = async (walletAddress) => {
         return null;
     }
 };
+
 
 // Проверка новых транзакций
 const checkForNewTransactions = async () => {
@@ -170,17 +231,22 @@ const checkForNewTransactions = async () => {
                     wallet.lastKnownTransaction = { hash: lastTransaction.hash };
                     saveWallets();
 
-                    // Отправляем сообщение
+                    // Проверяем наличие адреса в новом списке кошельков
+                    const otherPartyName = getWalletNameFromWatchList(otherParty);
                     const shortAddress = (address) => `${address.slice(0, 6)}...${address.slice(-6)}`;
-                    await bot.telegram.sendMessage(
-                        chatId,
+
+                    // Формируем сообщение
+                    const transactionMessage =
                         `*Новая транзакция ${wallet.name}:*\n` +
                         `💵 *Сумма:* \`${(lastTransaction.amount / 1e6).toFixed(2)} USDT\`\n` +
-                        `👤 *${isOutgoing ? "Получатель" : "Отправитель"}:* \`${shortAddress(otherParty)}\`\n` +
+                        `👤 *${isOutgoing ? "Получатель" : "Отправитель"}:* \`${otherPartyName || shortAddress(otherParty)}\` \n` +
                         `📄 *Тип:* \`${isOutgoing ? "Отправка" : "Пополнение"}\`\n` +
-                        `[🔗 Просмотреть транзакцию](https://tronscan.org/#/transaction/${lastTransaction.hash})`,
-                        { parse_mode: 'MarkdownV2' }
-                    );
+                        ` [🔗 Просмотреть транзакцию](https://tronscan.org/#/transaction/${lastTransaction.hash})`;
+
+                    // Отправляем сообщение
+                    await bot.telegram.sendMessage(chatId, transactionMessage, {
+                        parse_mode: 'MarkdownV2',
+                    });
                 }
             } catch (error) {
                 console.error(`Ошибка проверки транзакций для кошелька ${wallet.address}:`, error.message);
@@ -191,8 +257,8 @@ const checkForNewTransactions = async () => {
 
 
 
-// Запускаем проверку каждые 30 секунд
-setInterval(checkForNewTransactions, 30000);
+// Запускаем проверку каждую секунду
+setInterval(checkForNewTransactions, 3000);
 
 // Запуск бота
 bot.launch();
