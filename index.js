@@ -45,8 +45,9 @@ bot.telegram.setMyCommands([
     { command: '/listwallets', description: 'Просмотр всех кошельков' },
     { command: '/addwallet', description: 'Добавление кошелька' },
     { command: '/removewallet', description: 'Удаление кошелька' },
-    { command: '/addwatch', description: 'добавить кошелек партнеров' },
-    { command: '/showwatchlist', description: 'Удаление кошелька' },
+    { command: '/addwatch', description: 'Добавить кошелек партнеров' },
+    { command: '/showwatchlist', description: 'Посмотреть кошельки партнеров' },
+    { command: '/removewatch', description: 'Удаление кошелька партнеров' },
 ]);
 
 // /start
@@ -56,6 +57,7 @@ bot.start((ctx) => {
         'Привет! Я бот для отслеживания транзакций.\n' +
         'Команды:\n' +
         '/addwatch - добавить кошелек партнеров\n' +
+        '/removewatch - удалить кошелек партнеров\n' +
         '/showwatchlist - список кошельков партнеров\n' +
         '/addwallet - добавить кошелек для отслеживания\n' +
         '/removewallet - удалить кошелек для отслеживания\n' +
@@ -117,6 +119,16 @@ const getWalletNameFromWatchList = (address) => {
     const wallet = watchList.find((w) => w.address === address);
     return wallet ? wallet.name : null;
 };
+
+
+// /removewatch — команда для удаления кошельков из watchList
+bot.command('removewatch', (ctx) => {
+    if (watchList.length === 0) {
+        return ctx.reply('Список кошельков для проверки пуст.');
+    }
+    ctx.session.state = { action: 'removing_watchlist_wallet_name' };
+    ctx.reply('Введите имя кошелька, который хотите удалить из списка для проверки:');
+});
 
 
 
@@ -193,55 +205,96 @@ bot.on('text', async (ctx) => {
         }
         ctx.session.state = null;
     }
+
+
+    // Удаление кошелька партнера из watchList
+    if (ctx.session.state?.action === 'removing_watchlist_wallet_name') {
+        const walletName = ctx.message.text.trim();
+
+        const walletIndex = watchList.findIndex((wallet) => wallet.name === walletName);
+        if (walletIndex === -1) {
+            ctx.reply('Кошелек с таким именем не найден в списке для проверки.');
+        } else {
+            const removedWallet = watchList.splice(walletIndex, 1);
+            saveWatchList();
+            ctx.reply(`Кошелек "${removedWallet[0].name}" удален из списка для проверки.`);
+        }
+        ctx.session.state = null;
+    }
 });
 
-// Функция получения последней транзакции (входящей/исходящей)
-const getLastTransaction = async (walletAddress) => {
+// Функция получения транзакций с параметрами (start и limit для пагинации)
+const getTransactions = async (walletAddress, start = 0, limit = 10) => {
     try {
         const response = await axios.get(
-            `https://apilist.tronscanapi.com/api/transfer/trc20?address=${walletAddress}&trc20Id=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t&direction=0&start=0&limit=3`
+            `https://apilist.tronscanapi.com/api/transfer/trc20?address=${walletAddress}&trc20Id=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t&direction=0&start=${start}&limit=${limit}`
         );
-        return response.data.data?.[0] || null;
+        return response.data.data || [];
     } catch (error) {
-        console.error('Ошибка получения транзакции:', error.message);
-        return null;
+        console.error('Ошибка получения транзакций:', error.message);
+        return [];
     }
 };
-
 
 // Проверка новых транзакций
 const checkForNewTransactions = async () => {
     for (const chatId in wallets) {
         for (const wallet of wallets[chatId]) {
             try {
-                const lastTransaction = await getLastTransaction(wallet.address);
-                if (!lastTransaction) continue;
+                let start = 0;
+                const limit = 10;
+                const newTransactions = [];
+                const minAmount = 10 * 1e6;
 
-                // Проверяем, если транзакция новая
-                const isNewTransaction =
-                    !wallet.lastKnownTransaction ||
-                    wallet.lastKnownTransaction.hash !== lastTransaction.hash;
+                while (true) {
+                    // Получаем список транзакций с пагинацией
+                    const transactions = await getTransactions(wallet.address, start, limit);
 
-                if (isNewTransaction) {
+                    // Если транзакции закончились, выходим из цикла
+                    if (!transactions.length) break;
+
+                    for (const transaction of transactions) {
+                        // Пропускаем транзакцию, если её сумма меньше минимальной
+                        if (transaction.amount < minAmount) continue;
+
+                        // Если нашли последнюю обработанную транзакцию, прекращаем сканирование
+                        if (wallet.lastKnownTransaction?.hash === transaction.hash) {
+                            // Выходим из цикла for, а затем из while
+                            transactions.length = 0; // Очищаем список, чтобы выйти из while
+                            break;
+                        }
+
+                        // Добавляем транзакцию в список новых
+                        newTransactions.push(transaction);
+                    }
+
+                    // Увеличиваем старт для следующей порции транзакций
+                    start += limit;
+                }
+
+                // Обрабатываем новые транзакции (в обратном порядке, от старых к новым)
+                newTransactions.reverse();
+
+                for (const transaction of newTransactions) {
                     // Определяем тип транзакции
-                    const isOutgoing = lastTransaction.from === wallet.address;
-                    const otherParty = isOutgoing ? lastTransaction.to : lastTransaction.from;
+                    const isOutgoing = transaction.from === wallet.address;
+                    const otherParty = isOutgoing ? transaction.to : transaction.from;
 
                     // Сохраняем последнюю транзакцию
-                    wallet.lastKnownTransaction = { hash: lastTransaction.hash };
+                    wallet.lastKnownTransaction = { hash: transaction.hash };
                     saveWallets();
 
-                    // Проверяем наличие адреса в новом списке кошельков
+                    // Проверяем наличие адреса в списке наблюдений
                     const otherPartyName = getWalletNameFromWatchList(otherParty);
                     const shortAddress = (address) => `${address.slice(0, 6)}...${address.slice(-6)}`;
 
                     // Формируем сообщение
                     const transactionMessage =
                         `*Новая транзакция ${wallet.name}:*\n` +
-                        `💵 *Сумма:* \`${(lastTransaction.amount / 1e6).toFixed(2)} USDT\`\n` +
+                        `💵 *Сумма:* \`${(transaction.amount / 1e6).toFixed(2)} USDT\`\n` +
                         `👤 *${isOutgoing ? "Получатель" : "Отправитель"}:* \`${otherPartyName || shortAddress(otherParty)}\` \n` +
                         `📄 *Тип:* \`${isOutgoing ? "Отправка" : "Пополнение"}\`\n` +
-                        ` [🔗 Просмотреть транзакцию](https://tronscan.org/#/transaction/${lastTransaction.hash})`;
+                        ` [🔗 Просмотреть транзакцию](https://tronscan.org/#/transaction/${transaction.hash})`;
 
                     // Отправляем сообщение
                     await bot.telegram.sendMessage(chatId, transactionMessage, {
@@ -254,7 +307,6 @@ const checkForNewTransactions = async () => {
         }
     }
 };
-
 
 
 // Запускаем проверку каждую секунду
