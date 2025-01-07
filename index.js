@@ -245,8 +245,9 @@ const checkForNewTransactions = async () => {
                 const limit = 10;
                 const newTransactions = [];
                 const minAmount = 10 * 1e6;
+                let lastTransactionFound = false;
 
-                while (true) {
+                while (!lastTransactionFound) {
                     // Получаем список транзакций с пагинацией
                     const transactions = await getTransactions(wallet.address, start, limit);
 
@@ -259,9 +260,8 @@ const checkForNewTransactions = async () => {
 
                         // Если нашли последнюю обработанную транзакцию, прекращаем сканирование
                         if (wallet.lastKnownTransaction?.hash === transaction.hash) {
-                            // Выходим из цикла for, а затем из while
-                            transactions.length = 0; // Очищаем список, чтобы выйти из while
-                            break;
+                            lastTransactionFound = true;
+                            break; // Прерываем цикл for
                         }
 
                         // Добавляем транзакцию в список новых
@@ -280,7 +280,7 @@ const checkForNewTransactions = async () => {
                     const isOutgoing = transaction.from === wallet.address;
                     const otherParty = isOutgoing ? transaction.to : transaction.from;
 
-                    // Сохраняем последнюю транзакцию
+                    // Сохраняем последнюю обработанную транзакцию (самую новую)
                     wallet.lastKnownTransaction = { hash: transaction.hash };
                     saveWallets();
 
