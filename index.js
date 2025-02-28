@@ -8,6 +8,8 @@ const bot = new Telegraf(config.telegramToken);
 const wallets = {};
 // Новый список кошельков для проверки
 const watchList = [];
+// Новый список кошельков для баланса
+const balanceWallets = {};
 // Подгружаем сессии
 bot.use(session());
 
@@ -21,6 +23,14 @@ if (fs.existsSync('watchlist.json')) {
     const data = fs.readFileSync('watchlist.json');
     watchList.push(...JSON.parse(data));
 }
+// загрукза списка кошельков БАЛАНСА
+if (fs.existsSync('balanceWallets.json')) {
+    Object.assign(balanceWallets, JSON.parse(fs.readFileSync('balanceWallets.json')));
+}
+//сохранение кошелька БАЛАНСА
+const saveBalanceWallets = () => {
+    fs.writeFileSync('balanceWallets.json', JSON.stringify(balanceWallets));
+};
 
 // Сохранение кошельков в файл
 const saveWallets = () => {
@@ -48,6 +58,10 @@ bot.telegram.setMyCommands([
     { command: '/addwatch', description: 'Добавить кошелек партнеров' },
     { command: '/showwatchlist', description: 'Посмотреть кошельки партнеров' },
     { command: '/removewatch', description: 'Удаление кошелька партнеров' },
+    { command: '/addbalancewallet', description: 'добавление кошелька БАЛАНСА' },
+    { command: '/removebalancewallet', description: 'Удаление кошелька БАЛАНСА' },
+    { command: '/listbalancewallets', description: 'список кошелька БАЛАНСА' },
+    { command: '/getbalance', description: 'получить БАЛАНС' },
 ]);
 
 // /start
@@ -59,6 +73,10 @@ bot.start((ctx) => {
         '/addwatch - добавить кошелек партнеров\n' +
         '/removewatch - удалить кошелек партнеров\n' +
         '/showwatchlist - список кошельков партнеров\n' +
+        '/addbalancewallet - добавить кошелек для баланса\n' +
+        '/removebalancewallet - удалить кошелек для баланса\n' +
+        '/listbalancewallets - список кошельков для баланса\n' +
+        '/getbalance - получить баланс\n' +
         '/addwallet - добавить кошелек для отслеживания\n' +
         '/removewallet - удалить кошелек для отслеживания\n' +
         '/listwallets - список кошельков'
@@ -69,6 +87,33 @@ bot.start((ctx) => {
 bot.command('addwallet', (ctx) => {
     ctx.session.state = { action: 'adding_wallet_address' };
     ctx.reply('Введите адрес кошелька:');
+});
+
+// /addbalancewallet
+bot.command('addbalancewallet', (ctx) => {
+    ctx.session.state = { action: 'adding_balance_wallet_address' };
+    ctx.reply('Введите адрес кошелька для получения баланса:');
+});
+// /removebalancewallet
+bot.command('removebalancewallet', (ctx) => {
+    const chatId = getChatId(ctx);
+    if (!balanceWallets[chatId] || balanceWallets[chatId].length === 0) {
+        return ctx.reply('Список кошельков для баланса пуст.');
+    }
+    ctx.session.state = { action: 'removing_balance_wallet_name' };
+    ctx.reply('Введите имя кошелька, который хотите удалить:');
+});
+// /listbalancewallets
+bot.command('listbalancewallets', (ctx) => {
+    const chatId = getChatId(ctx);
+    const chatWallets = balanceWallets[chatId] || [];
+    if (chatWallets.length === 0) {
+        return ctx.reply('Список кошельков для баланса пуст.');
+    }
+    ctx.reply(
+        'Список кошельков для баланса:\n' +
+        chatWallets.map((wallet, index) => `${index + 1}. ${wallet.name} (${wallet.address})`).join('\n')
+    );
 });
 
 // /removewallet
@@ -130,6 +175,48 @@ bot.command('removewatch', (ctx) => {
     ctx.reply('Введите имя кошелька, который хотите удалить из списка для проверки:');
 });
 
+// Кнопка баланса 
+bot.command('getbalance', async (ctx) => {
+    const chatId = getChatId(ctx);
+    const chatWallets = balanceWallets[chatId] || [];
+
+    if (chatWallets.length === 0) {
+        return ctx.reply('Нет кошельков для запроса баланса.');
+    }
+
+    let totalBalance = 0;
+    const delay = (ms) => new Promise(res => setTimeout(res, ms));
+
+    for (const wallet of chatWallets) {
+        let retries = 3; // Количество попыток запроса баланса
+        while (retries > 0) {
+            try {
+                const response = await axios.get(`https://apilist.tronscanapi.com/api/account?address=${wallet.address}`);
+                const usdtBalance = response.data.trc20token_balances?.find(token => token.tokenAbbr === 'USDT');
+
+                if (usdtBalance) {
+                    const balance = parseInt(usdtBalance.balance) / Math.pow(10, usdtBalance.tokenDecimal);
+                    totalBalance += balance;
+                }
+                await delay(4000); // Увеличиваем задержку до 4 секунд между запросами
+                break; // Если запрос успешен, выходим из цикла ретраев
+            } catch (error) {
+                retries--;
+                console.error(`Ошибка получения баланса для ${wallet.address}:`, error.response?.data || error.message);
+                if (error.response?.data?.Error?.includes('request rate exceeded')) {
+                    console.log('Превышен лимит запросов, ждем 5 секунд...');
+                    await delay(5000); // Ждем 5 секунд перед новой попыткой
+                } else {
+                    break; // Если ошибка не связана с лимитом, не повторяем запрос
+                }
+            }
+        }
+    }
+
+    ctx.reply(`Общий баланс по всем кошелькам: ${totalBalance.toFixed(2)} USDT`);
+});
+
+
 
 
 // Обработчик текстовых сообщений для добавления и удаления кошельков
@@ -158,9 +245,20 @@ bot.on('text', async (ctx) => {
         if (wallets[chatId].some((wallet) => wallet.name === walletName)) {
             ctx.reply('Кошелек с таким именем уже существует.');
         } else {
-            wallets[chatId].push({ name: walletName, address: walletAddress, lastKnownTransaction: null });
+            // Получаем последнюю транзакцию
+            const transactions = await getTransactions(walletAddress, 0, 1); // Берем 1 последнюю транзакцию
+            const lastTransaction = transactions.length > 0 ? transactions[0] : null;
+
+            // Добавляем кошелек с последней транзакцией
+            wallets[chatId].push({
+                name: walletName,
+                address: walletAddress,
+                lastKnownTransaction: lastTransaction ? { hash: lastTransaction.hash } : null,
+                justAdded: true,
+            });
+
             saveWallets();
-            ctx.reply(`Кошелек "${walletName}" добавлен.`);
+            ctx.reply(`Кошелек "${walletName}" добавлен и начнет отслеживаться.`);
         }
         ctx.session.state = null;
     }
@@ -221,10 +319,50 @@ bot.on('text', async (ctx) => {
         }
         ctx.session.state = null;
     }
+    // Добавление кошельков в список балансов
+    if (ctx.session.state?.action === 'adding_balance_wallet_address') {
+        ctx.session.newBalanceWalletAddress = ctx.message.text.trim();
+        ctx.session.state.action = 'adding_balance_wallet_name';
+        ctx.reply('Введите имя для кошелька:');
+    } else if (ctx.session.state?.action === 'adding_balance_wallet_name') {
+        const walletName = ctx.message.text.trim();
+        const walletAddress = ctx.session.newBalanceWalletAddress;
+
+        balanceWallets[chatId] = balanceWallets[chatId] || [];
+        if (balanceWallets[chatId].some((wallet) => wallet.name === walletName)) {
+            ctx.reply('Кошелек с таким именем уже существует в списке балансов.');
+        } else {
+            balanceWallets[chatId].push({ name: walletName, address: walletAddress });
+            saveBalanceWallets();
+            ctx.reply(`Кошелек "${walletName}" добавлен в список балансов.`);
+        }
+        ctx.session.state = null;
+    }
+    // Удаление кошелька из списка балансов
+    if (ctx.session.state?.action === 'removing_balance_wallet_name') {
+        const walletName = ctx.message.text.trim();
+
+        if (!balanceWallets[chatId] || balanceWallets[chatId].length === 0) {
+            ctx.reply('Список кошельков для баланса пуст.');
+            return;
+        }
+
+        const walletIndex = balanceWallets[chatId].findIndex((wallet) => wallet.name === walletName);
+        if (walletIndex === -1) {
+            ctx.reply('Кошелек с таким именем не найден в списке балансов.');
+        } else {
+            const removedWallet = balanceWallets[chatId].splice(walletIndex, 1);
+            saveBalanceWallets();
+            ctx.reply(`Кошелек "${removedWallet[0].name}" удален из списка балансов.`);
+        }
+        ctx.session.state = null;
+    }
 });
 
 // Функция получения транзакций с параметрами (start и limit для пагинации)
+const delay = (ms) => new Promise(res => setTimeout(res, ms));
 const getTransactions = async (walletAddress, start = 0, limit = 10) => {
+    await delay(4000);
     try {
         const response = await axios.get(
             `https://apilist.tronscanapi.com/api/transfer/trc20?address=${walletAddress}&trc20Id=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t&direction=0&start=${start}&limit=${limit}`
@@ -235,6 +373,7 @@ const getTransactions = async (walletAddress, start = 0, limit = 10) => {
         return [];
     }
 };
+
 
 // Проверка новых транзакций
 const checkForNewTransactions = async () => {
@@ -274,6 +413,16 @@ const checkForNewTransactions = async () => {
 
                 // Обрабатываем новые транзакции (в обратном порядке, от старых к новым)
                 newTransactions.reverse();
+
+                if (wallet.justAdded) {
+                    // Кошелёк только добавили, фиксируем последнюю транзакцию и пропускаем
+                    if (newTransactions.length > 0) {
+                        wallet.lastKnownTransaction = { hash: newTransactions[newTransactions.length - 1].hash };
+                        saveWallets();
+                    }
+                    wallet.justAdded = false; // Теперь кошелек работает в нормальном режиме
+                    continue; // Пропускаем отправку старых транзакций
+                }
 
                 for (const transaction of newTransactions) {
                     // Определяем тип транзакции
