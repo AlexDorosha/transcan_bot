@@ -10,8 +10,23 @@ const wallets = {};
 const watchList = [];
 // Новый список кошельков для баланса
 const balanceWallets = {};
-// Подгружаем сессии
+
+// Настройка сессии с дефолтными значениями
 bot.use(session());
+
+// Теперь устанавливаем начальное состояние при создании сессии
+bot.use((ctx, next) => {
+    // Инициализируем сессию если её нет
+    if (!ctx.session) {
+        ctx.session = {
+            state: null,
+            newWalletAddress: null,
+            newWatchListWalletAddress: null,
+            newBalanceWalletAddress: null
+        };
+    }
+    return next();
+});
 
 // Загрузка сохраненных кошельков (если есть)
 if (fs.existsSync('wallets.json')) {
@@ -66,7 +81,9 @@ bot.telegram.setMyCommands([
 
 // /start
 bot.start((ctx) => {
-    ctx.session = ctx.session || {};
+    // Убедимся что сессия существует
+    if (!ctx.session) ctx.session = {};
+    
     ctx.reply(
         'Привет! Я бот для отслеживания транзакций.\n' +
         'Команды:\n' +
@@ -85,17 +102,21 @@ bot.start((ctx) => {
 
 // /addwallet
 bot.command('addwallet', (ctx) => {
+    if (!ctx.session) ctx.session = {};
     ctx.session.state = { action: 'adding_wallet_address' };
     ctx.reply('Введите адрес кошелька:');
 });
 
 // /addbalancewallet
 bot.command('addbalancewallet', (ctx) => {
+    if (!ctx.session) ctx.session = {};
     ctx.session.state = { action: 'adding_balance_wallet_address' };
     ctx.reply('Введите адрес кошелька для получения баланса:');
 });
+
 // /removebalancewallet
 bot.command('removebalancewallet', (ctx) => {
+    if (!ctx.session) ctx.session = {};
     const chatId = getChatId(ctx);
     if (!balanceWallets[chatId] || balanceWallets[chatId].length === 0) {
         return ctx.reply('Список кошельков для баланса пуст.');
@@ -103,6 +124,7 @@ bot.command('removebalancewallet', (ctx) => {
     ctx.session.state = { action: 'removing_balance_wallet_name' };
     ctx.reply('Введите имя кошелька, который хотите удалить:');
 });
+
 // /listbalancewallets
 bot.command('listbalancewallets', (ctx) => {
     const chatId = getChatId(ctx);
@@ -118,6 +140,7 @@ bot.command('listbalancewallets', (ctx) => {
 
 // /removewallet
 bot.command('removewallet', (ctx) => {
+    if (!ctx.session) ctx.session = {};
     const chatId = getChatId(ctx);
     if (!wallets[chatId] || wallets[chatId].length === 0) {
         return ctx.reply('Кошельков не найдено.');
@@ -139,14 +162,14 @@ bot.command('listwallets', (ctx) => {
     );
 });
 
-// /addwatch       Добавление команды для включения режима добавления кошельков в watchList
+// /addwatch
 bot.command('addwatch', (ctx) => {
+    if (!ctx.session) ctx.session = {};
     ctx.session.state = { action: 'adding_watchlist_wallet_address' };
     ctx.reply('Введите адрес кошелька для добавления в список наблюдения:');
 });
 
-
-// /showwatchlist    Вывод списка кошельков для проверки
+// /showwatchlist
 bot.command('showwatchlist', (ctx) => {
     if (watchList.length === 0) {
         ctx.reply('Список кошельков для проверки пуст.');
@@ -158,16 +181,15 @@ bot.command('showwatchlist', (ctx) => {
     }
 });
 
-
 // Функция для поиска имени кошелька по адресу в новом списке
 const getWalletNameFromWatchList = (address) => {
     const wallet = watchList.find((w) => w.address === address);
     return wallet ? wallet.name : null;
 };
 
-
-// /removewatch — команда для удаления кошельков из watchList
+// /removewatch
 bot.command('removewatch', (ctx) => {
+    if (!ctx.session) ctx.session = {};
     if (watchList.length === 0) {
         return ctx.reply('Список кошельков для проверки пуст.');
     }
@@ -216,19 +238,22 @@ bot.command('getbalance', async (ctx) => {
     ctx.reply(`Общий баланс по всем кошелькам: ${totalBalance.toFixed(2)} USDT`);
 });
 
-
-
-
 // Обработчик текстовых сообщений для добавления и удаления кошельков
 bot.on('text', async (ctx) => {
-    ctx.session = ctx.session || {};
+    // Убедимся, что сессия существует
+    if (!ctx.session) ctx.session = {};
     const chatId = getChatId(ctx);
 
     // Проверка прав в группах
     if (ctx.chat.type === 'supergroup' || ctx.chat.type === 'group') {
-        const botInfo = await bot.telegram.getChatMember(ctx.chat.id, ctx.botInfo.id);
-        if (!['administrator', 'member'].includes(botInfo.status)) {
-            return ctx.reply('У меня нет прав для работы в этой группе.');
+        try {
+            const botInfo = await bot.telegram.getChatMember(ctx.chat.id, ctx.botInfo.id);
+            if (!['administrator', 'member'].includes(botInfo.status)) {
+                return ctx.reply('У меня нет прав для работы в этой группе.');
+            }
+        } catch (error) {
+            console.error('Ошибка при проверке прав бота:', error);
+            return ctx.reply('Не удалось проверить права бота в группе.');
         }
     }
 
@@ -245,20 +270,25 @@ bot.on('text', async (ctx) => {
         if (wallets[chatId].some((wallet) => wallet.name === walletName)) {
             ctx.reply('Кошелек с таким именем уже существует.');
         } else {
-            // Получаем последнюю транзакцию
-            const transactions = await getTransactions(walletAddress, 0, 1); // Берем 1 последнюю транзакцию
-            const lastTransaction = transactions.length > 0 ? transactions[0] : null;
+            try {
+                // Получаем последнюю транзакцию
+                const transactions = await getTransactions(walletAddress, 0, 1); // Берем 1 последнюю транзакцию
+                const lastTransaction = transactions.length > 0 ? transactions[0] : null;
 
-            // Добавляем кошелек с последней транзакцией
-            wallets[chatId].push({
-                name: walletName,
-                address: walletAddress,
-                lastKnownTransaction: lastTransaction ? { hash: lastTransaction.hash } : null,
-                justAdded: true,
-            });
+                // Добавляем кошелек с последней транзакцией
+                wallets[chatId].push({
+                    name: walletName,
+                    address: walletAddress,
+                    lastKnownTransaction: lastTransaction ? { hash: lastTransaction.hash } : null,
+                    justAdded: true,
+                });
 
-            saveWallets();
-            ctx.reply(`Кошелек "${walletName}" добавлен и начнет отслеживаться.`);
+                saveWallets();
+                ctx.reply(`Кошелек "${walletName}" добавлен и начнет отслеживаться.`);
+            } catch (error) {
+                console.error('Ошибка при добавлении кошелька:', error);
+                ctx.reply('Произошла ошибка при добавлении кошелька. Пожалуйста, попробуйте снова позже.');
+            }
         }
         ctx.session.state = null;
     }
@@ -283,11 +313,9 @@ bot.on('text', async (ctx) => {
         ctx.session.state = null;
     }
 
-
     // Добавление кошельков в список для проверки
-    if (ctx.session.state?.action === 'adding_watchlist_wallet_address') {
-        const walletAddress = ctx.message.text.trim();
-        ctx.session.newWatchListWalletAddress = walletAddress;
+    else if (ctx.session.state?.action === 'adding_watchlist_wallet_address') {
+        ctx.session.newWatchListWalletAddress = ctx.message.text.trim();
         ctx.session.state.action = 'adding_watchlist_wallet_name';
         ctx.reply('Введите имя для кошелька:');
     } else if (ctx.session.state?.action === 'adding_watchlist_wallet_name') {
@@ -304,9 +332,8 @@ bot.on('text', async (ctx) => {
         ctx.session.state = null;
     }
 
-
     // Удаление кошелька партнера из watchList
-    if (ctx.session.state?.action === 'removing_watchlist_wallet_name') {
+    else if (ctx.session.state?.action === 'removing_watchlist_wallet_name') {
         const walletName = ctx.message.text.trim();
 
         const walletIndex = watchList.findIndex((wallet) => wallet.name === walletName);
@@ -319,8 +346,9 @@ bot.on('text', async (ctx) => {
         }
         ctx.session.state = null;
     }
+    
     // Добавление кошельков в список балансов
-    if (ctx.session.state?.action === 'adding_balance_wallet_address') {
+    else if (ctx.session.state?.action === 'adding_balance_wallet_address') {
         ctx.session.newBalanceWalletAddress = ctx.message.text.trim();
         ctx.session.state.action = 'adding_balance_wallet_name';
         ctx.reply('Введите имя для кошелька:');
@@ -338,8 +366,9 @@ bot.on('text', async (ctx) => {
         }
         ctx.session.state = null;
     }
+    
     // Удаление кошелька из списка балансов
-    if (ctx.session.state?.action === 'removing_balance_wallet_name') {
+    else if (ctx.session.state?.action === 'removing_balance_wallet_name') {
         const walletName = ctx.message.text.trim();
 
         if (!balanceWallets[chatId] || balanceWallets[chatId].length === 0) {
@@ -362,105 +391,147 @@ bot.on('text', async (ctx) => {
 // Функция получения транзакций с параметрами (start и limit для пагинации)
 const delay = (ms) => new Promise(res => setTimeout(res, ms));
 const getTransactions = async (walletAddress, start = 0, limit = 10) => {
-    await delay(4000);
+    await delay(5000); // Увеличиваем задержку до 5 секунд
     try {
         const response = await axios.get(
-            `https://apilist.tronscanapi.com/api/transfer/trc20?address=${walletAddress}&trc20Id=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t&direction=0&start=${start}&limit=${limit}`
+            `https://apilist.tronscanapi.com/api/transfer/trc20?address=${walletAddress}&trc20Id=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t&direction=0&start=${start}&limit=${limit}`,
+            {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Accept': 'application/json, text/plain, */*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Referer': 'https://tronscan.org/',
+                    'Origin': 'https://tronscan.org'
+                }
+            }
         );
         return response.data.data || [];
     } catch (error) {
+        if (error.response && error.response.status === 403) {
+            console.error('Ошибка доступа 403. Ожидание 60 секунд перед следующей попыткой.');
+            await delay(60000); // Ждем минуту при 403 ошибке
+            return [];
+        }
         console.error('Ошибка получения транзакций:', error.message);
         return [];
     }
 };
 
-
 // Проверка новых транзакций
 const checkForNewTransactions = async () => {
-    for (const chatId in wallets) {
-        for (const wallet of wallets[chatId]) {
-            try {
-                let start = 0;
-                const limit = 10;
-                const newTransactions = [];
-                const minAmount = 10 * 1e6;
-                let lastTransactionFound = false;
+    try {
+        for (const chatId in wallets) {
+            for (const wallet of wallets[chatId]) {
+                try {
+                    let start = 0;
+                    const limit = 10;
+                    const newTransactions = [];
+                    const minAmount = 10 * 1e6;
+                    let lastTransactionFound = false;
 
-                while (!lastTransactionFound) {
-                    // Получаем список транзакций с пагинацией
-                    const transactions = await getTransactions(wallet.address, start, limit);
+                    while (!lastTransactionFound) {
+                        // Получаем список транзакций с пагинацией
+                        const transactions = await getTransactions(wallet.address, start, limit);
 
-                    // Если транзакции закончились, выходим из цикла
-                    if (!transactions.length) break;
+                        // Если транзакции закончились, выходим из цикла
+                        if (!transactions.length) break;
 
-                    for (const transaction of transactions) {
-                        // Пропускаем транзакцию, если её сумма меньше минимальной
-                        if (transaction.amount < minAmount) continue;
+                        for (const transaction of transactions) {
+                            // Пропускаем транзакцию, если её сумма меньше минимальной
+                            if (transaction.amount < minAmount) continue;
 
-                        // Если нашли последнюю обработанную транзакцию, прекращаем сканирование
-                        if (wallet.lastKnownTransaction?.hash === transaction.hash) {
-                            lastTransactionFound = true;
-                            break; // Прерываем цикл for
+                            // Если нашли последнюю обработанную транзакцию, прекращаем сканирование
+                            if (wallet.lastKnownTransaction?.hash === transaction.hash) {
+                                lastTransactionFound = true;
+                                break; // Прерываем цикл for
+                            }
+
+                            // Добавляем транзакцию в список новых
+                            newTransactions.push(transaction);
                         }
 
-                        // Добавляем транзакцию в список новых
-                        newTransactions.push(transaction);
+                        // Увеличиваем старт для следующей порции транзакций
+                        start += limit;
                     }
 
-                    // Увеличиваем старт для следующей порции транзакций
-                    start += limit;
-                }
+                    // Обрабатываем новые транзакции (в обратном порядке, от старых к новым)
+                    newTransactions.reverse();
 
-                // Обрабатываем новые транзакции (в обратном порядке, от старых к новым)
-                newTransactions.reverse();
+                    if (wallet.justAdded) {
+                        // Кошелёк только добавили, фиксируем последнюю транзакцию и пропускаем
+                        if (newTransactions.length > 0) {
+                            wallet.lastKnownTransaction = { hash: newTransactions[newTransactions.length - 1].hash };
+                            saveWallets();
+                        }
+                        wallet.justAdded = false; // Теперь кошелек работает в нормальном режиме
+                        continue; // Пропускаем отправку старых транзакций
+                    }
 
-                if (wallet.justAdded) {
-                    // Кошелёк только добавили, фиксируем последнюю транзакцию и пропускаем
-                    if (newTransactions.length > 0) {
-                        wallet.lastKnownTransaction = { hash: newTransactions[newTransactions.length - 1].hash };
+                    for (const transaction of newTransactions) {
+                        // Определяем тип транзакции
+                        const isOutgoing = transaction.from === wallet.address;
+                        const otherParty = isOutgoing ? transaction.to : transaction.from;
+
+                        // Сохраняем последнюю обработанную транзакцию (самую новую)
+                        wallet.lastKnownTransaction = { hash: transaction.hash };
                         saveWallets();
+
+                        // Проверяем наличие адреса в списке наблюдений
+                        const otherPartyName = getWalletNameFromWatchList(otherParty);
+                        const shortAddress = (address) => `${address.slice(0, 6)}...${address.slice(-6)}`;
+
+                        // Формируем сообщение
+                        const transactionMessage =
+                            `*Новая транзакция ${wallet.name}:*\n` +
+                            `💵 *Сумма:* \`${(transaction.amount / 1e6).toFixed(2)} USDT\`\n` +
+                            `👤 *${isOutgoing ? "Получатель" : "Отправитель"}:* \`${otherPartyName || shortAddress(otherParty)}\` \n` +
+                            `📄 *Тип:* \`${isOutgoing ? "Отправка" : "Пополнение"}\`\n` +
+                            ` [🔗 Просмотреть транзакцию](https://tronscan.org/#/transaction/${transaction.hash})`;
+
+                        try {
+                            // Отправляем сообщение
+                            await bot.telegram.sendMessage(chatId, transactionMessage, {
+                                parse_mode: 'MarkdownV2',
+                                disable_web_page_preview: true
+                            });
+                        } catch (error) {
+                            console.error(`Ошибка отправки сообщения для чата ${chatId}:`, error.message);
+                        }
                     }
-                    wallet.justAdded = false; // Теперь кошелек работает в нормальном режиме
-                    continue; // Пропускаем отправку старых транзакций
+                } catch (error) {
+                    console.error(`Ошибка проверки транзакций для кошелька ${wallet.address}:`, error.message);
+                    await delay(10000); // Пауза перед проверкой следующего кошелька при ошибке
                 }
-
-                for (const transaction of newTransactions) {
-                    // Определяем тип транзакции
-                    const isOutgoing = transaction.from === wallet.address;
-                    const otherParty = isOutgoing ? transaction.to : transaction.from;
-
-                    // Сохраняем последнюю обработанную транзакцию (самую новую)
-                    wallet.lastKnownTransaction = { hash: transaction.hash };
-                    saveWallets();
-
-                    // Проверяем наличие адреса в списке наблюдений
-                    const otherPartyName = getWalletNameFromWatchList(otherParty);
-                    const shortAddress = (address) => `${address.slice(0, 6)}...${address.slice(-6)}`;
-
-                    // Формируем сообщение
-                    const transactionMessage =
-                        `*Новая транзакция ${wallet.name}:*\n` +
-                        `💵 *Сумма:* \`${(transaction.amount / 1e6).toFixed(2)} USDT\`\n` +
-                        `👤 *${isOutgoing ? "Получатель" : "Отправитель"}:* \`${otherPartyName || shortAddress(otherParty)}\` \n` +
-                        `📄 *Тип:* \`${isOutgoing ? "Отправка" : "Пополнение"}\`\n` +
-                        ` [🔗 Просмотреть транзакцию](https://tronscan.org/#/transaction/${transaction.hash})`;
-
-                    // Отправляем сообщение
-                    await bot.telegram.sendMessage(chatId, transactionMessage, {
-                        parse_mode: 'MarkdownV2',
-                    });
-                }
-            } catch (error) {
-                console.error(`Ошибка проверки транзакций для кошелька ${wallet.address}:`, error.message);
+                // Добавляем задержку между проверками разных кошельков
+                await delay(3000);
             }
         }
+    } catch (error) {
+        console.error('Глобальная ошибка при проверке транзакций:', error);
     }
 };
 
+// Увеличиваем интервал проверки до 1 минуты
+setInterval(checkForNewTransactions, 60000);
 
-// Запускаем проверку каждую секунду
-setInterval(checkForNewTransactions, 3000);
+// Обработчик ошибок
+bot.catch((err, ctx) => {
+    console.error(`Ошибка при обработке update ${ctx.updateType}:`, err);
+    // Отправляем сообщение об ошибке пользователю (если возможно)
+    try {
+        ctx.reply('Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте снова позже.');
+    } catch (e) {
+        console.error('Не удалось отправить сообщение об ошибке пользователю:', e);
+    }
+});
 
 // Запуск бота
-bot.launch();
-console.log('Бот запущен.');
+bot.launch().then(() => {
+    console.log('Бот запущен.');
+}).catch(err => {
+    console.error('Ошибка при запуске бота:', err);
+});
+
+// Включаем корректное завершение работы
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
