@@ -1,5 +1,5 @@
 const config = {
-    "telegramToken": "7591333258:AAFieM959qoYFHxA13Xw8BaulTJ4dkzXnC0"
+    "telegramToken": "7591333258:AAE_ZjYlj4IX7PJnrw-CqScLPL_oSAgvAHY"
 };
 
 module.exports = { config };
